@@ -44,15 +44,15 @@ This project supports *macOS 14.6* or later.
 > - D3DMetal (toggle) 64Bit Direct3D 11 & 12 via Metal (Apple Silicon Macs).
 > - DXVK (toggle) DirectX 10 & 11 via Vulkan.
 > - CNC-DDRAW (default)
-> - D9VK (default) DirectX 9 via Vulkan. (Apple Silicon & macOS Tahoe)
+> - D9VK (default) DirectX 8 & 9 via Vulkan. (Apple Silicon & macOS Tahoe)
 > - DXMT (default) DirectX 10 & DirectX 11 via Metal.
-> - WineD3D (default) Supports DirectX 8 and below.
+> - WineD3D (default) Supports DirectX 7 and below.
 >
 > <br>
 >
 > Apples D3DMetal commonly refered to as GPTK is closed source and has a restrictive license\
 > it can not be used for commerial ports, that's not the case for all over renders.\
-> You can review the license for [D3DMetal-v3.0](/D3DMetal/3.0/License.pdf)
+> You can review the license for [D3DMetal-v4.0](/D3DMetal/4.0/License.pdf)
 
 <br>
 
