@@ -1,0 +1,22 @@
+diff --git a/src/d3d11/d3d11_swapchain.cpp b/src/d3d11/d3d11_swapchain.cpp
+index 86cf466..82a0c34 100644
+--- a/src/d3d11/d3d11_swapchain.cpp
++++ b/src/d3d11/d3d11_swapchain.cpp
+@@ -818,6 +818,9 @@ public:
+   };
+ 
+   void UpdateStatistics(const FrameStatisticsContainer& statistics, uint64_t frame_id) {
++#ifdef DXMT_DEBUG
++    // HUDState discards these lines without DXMT_DEBUG. Avoid formatting them
++    // on the command encoding thread when the debug HUD is compiled out.
+     hud.begin();
+     auto &frame = statistics.at(frame_id - 1); // show the previous one frame statistics
+     auto &average = statistics.average();
+@@ -896,6 +899,7 @@ public:
+       }
+     }
+     hud.end();
++#endif
+   }
+ 
+   BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() final { return FALSE; };

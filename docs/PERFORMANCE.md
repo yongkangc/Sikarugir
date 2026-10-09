@@ -25,7 +25,7 @@ The scripts require Python 3 and the macOS system tools. No administrator access
 or Xcode is needed for the resource measurements and statistical stack sampler.
 
 ```sh
-python3 tools/test_profile_game.py
+python3 -m unittest discover -s tools -p 'test_*.py'
 python3 tools/profile_game.py --scene first-stage-gameplay \
   --seconds 20 --sample-seconds 5 --output profiling-results/run-01
 ```
@@ -48,33 +48,55 @@ attributing costs to specific Wine/graphics functions.
 
 ## Enable process-local Metal telemetry
 
-Quit the game normally, then launch its custom Sikarugir entry with:
+Quit the game and Windows Steam normally, then launch its custom Sikarugir entry with:
 
 ```sh
 python3 tools/launch_profile_game.py '/path/to/wrapper.app/Contents/Game.app' \
   --output profiling-results/telemetry-launch
 ```
 
-This sets Metal HUD, frame logging and shader logging variables for that launcher
-process and its children. It does not edit the wrapper or alter global launchctl
-settings. A wrapper may override inherited variables; verify that the HUD appears
-and that telemetry events are present. Restarting an existing game is necessary
-to inherit the environment. The launch helper has not yet been tested end to end
-with Metal telemetry in this wrapper.
+This sets Metal HUD and frame logging variables for that launcher process and its
+children. Shader-event logging is off by default to reduce extra instrumentation;
+use `--shader-logs` for a separate shader investigation. The helper rejects an
+already-running game or Windows Steam, which cannot inherit the new environment.
+Use `--match` for a game other than Risk of Rain 2.
+
+The helper does not edit the wrapper or alter global launchctl settings. In the
+tested wrapper, inherited variables alone were insufficient: its `METAL_HUD`
+setting also needed enabling before a fresh launch. Successful frame telemetry
+was obtained after that setting was temporarily enabled and restored. Enable the
+HUD in your wrapper settings if needed, then restore your preferred setting after
+capture. Verify actual HUD log events; starting a launcher is not proof of telemetry.
 
 ```sh
 python3 tools/profile_game.py --scene first-stage-gameplay --seconds 20 \
   --metal-logs --output profiling-results/run-02
 ```
 
-`metal-hud.log` is restricted to the target PID. A running collector or a file
-containing only column headings is not evidence of frame telemetry. The Metal
-log collector was exercised locally, but the current game was launched without
-HUD logging and emitted no HUD events. Do not derive frame rates from an empty
-log. Environment variables and log formats follow
+`metal-hud.log` is restricted to the target PID. The profiler validates events and
+includes `frame_summary` and `frame-summary.json` only for valid telemetry from
+that process. Invalid or empty data produces an explicit validation error while
+preserving resource measurements. Resource results are saved before stack sampling
+so a sampling failure cannot discard them. Environment variables follow
 [Apple's Metal HUD documentation](https://developer.apple.com/documentation/xcode/monitoring-your-metal-apps-graphics-performance).
 Older HUD runtimes use the `MTL_HUD_LOGGING_ENABLED` spelling; the launch helper
 sets it alongside `MTL_HUD_LOG_ENABLED`.
+
+Existing logs can also be summarized without launching a game:
+
+```sh
+python3 tools/summarize_frames.py profiling-results/run-02/metal-hud.log
+```
+
+The parser follows the CSV layout in
+[Apple's HUD Tech Talk](https://developer.apple.com/videos/play/tech-talks/110339/).
+It deduplicates identical frame markers and rejects malformed, mixed-process or
+conflicting data. `--exclude-ambiguous-frames` explicitly removes both readings
+of conflicting boundary markers, reports the excluded count, and fails if more
+than 1% are affected. The capture tool accepts the same option with `--metal-logs`.
+Rates describe valid logged intervals; logging gaps are not filled in. Presentation
+interval minus GPU duration is not measured CPU execution time. Measure the
+instrumentation's overhead before making a performance improvement claim.
 
 ## Choose the improvement from evidence
 
@@ -96,6 +118,10 @@ Wine build tools and a Windows cross-compiler according to
 [DXMT's build instructions](https://github.com/Sikarugir-App/dxmt/blob/main/docs/DEVELOPMENT.md).
 This Mac currently has Command Line Tools only, so no replacement engine or DXMT
 binary has been built or installed.
+
+The [DXMT HUD formatting candidate](../patches/README.md#dxmt-hud-formatting-candidate)
+has isolated source validation. Its measured microsecond-scale saving is too small
+to explain the gameplay baseline; it is not a demonstrated FPS optimization.
 
 Machine traces remain in ignored `profiling-results/` directories. Raw stack and
 launch logs can contain local paths; inspect them before sharing. The repository

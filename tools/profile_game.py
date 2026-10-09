@@ -16,6 +16,8 @@ import statistics
 import subprocess
 import time
 
+from summarize_frames import summarize
+
 
 class Usage(ctypes.Structure):
     # rusage_info_v0 from the macOS SDK's sys/resource.h.
@@ -99,6 +101,19 @@ def loaded_components(sample):
     }.items() if marker in images})
 
 
+def frame_telemetry(text, pid, exclude_ambiguous=False):
+    """Keep resource results usable when HUD data is missing or invalid."""
+    try:
+        frames = summarize(text, exclude_ambiguous=exclude_ambiguous)
+        if frames["process_pid"] != pid:
+            raise ValueError("HUD process identity differs from the resource target")
+    except ValueError as error:
+        return {"frame_times": "unavailable: HUD data failed validation",
+                "frame_validation_error": str(error)}
+    return {"frame_times": "validated Metal HUD presentation/GPU intervals",
+            "frame_summary": frames}
+
+
 def capture(pid, seconds, directory):
     previous = usage(pid)
     identity = previous.start_abstime
@@ -137,9 +152,13 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--metal-logs", action="store_true",
                         help="Collect this process's Metal HUD messages while measuring resources")
+    parser.add_argument("--exclude-ambiguous-frames", action="store_true",
+                        help="Exclude conflicting HUD boundary markers (at most 1 percent)")
     args = parser.parse_args()
     if not 1 <= args.seconds <= 60 or not 0 <= args.sample_seconds <= 15:
         parser.error("Resource duration must be 1-60 seconds; stack sample duration 0-15 seconds")
+    if args.exclude_ambiguous_frames and not args.metal_logs:
+        parser.error("--exclude-ambiguous-frames requires --metal-logs")
     pid, name = find_game(args.match, args.pid)
     # Fresh directories prevent accidental overwrite and mixing different scenes.
     args.output.mkdir(parents=True, exist_ok=False)
@@ -173,7 +192,15 @@ def main():
                "mach_timebase": {"numer": _timebase.numer, "denom": _timebase.denom},
                "frame_times": "not captured; no FPS or frame-time conclusion is justified"}
     if args.metal_logs:
-        summary["metal_hud_log"] = "metal-hud.log; verify that telemetry events exist before deriving frame times"
+        summary["metal_hud_log"] = "metal-hud.log"
+        summary.update(frame_telemetry((args.output / "metal-hud.log").read_text(), pid,
+                                      args.exclude_ambiguous_frames))
+        if "frame_summary" in summary:
+            (args.output / "frame-summary.json").write_text(
+                json.dumps(summary["frame_summary"], indent=2) + "\n")
+    # Save resource/frame results before sampling, so a sampler failure does not
+    # discard an otherwise valid baseline.
+    (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     if args.sample_seconds:
         if usage(pid).start_abstime != initial.start_abstime:
             raise RuntimeError("Target identity changed before the stack sample")

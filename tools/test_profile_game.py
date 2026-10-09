@@ -4,7 +4,7 @@ import os
 import time
 import unittest
 
-from profile_game import TICK_SECONDS, loaded_components, redact_paths, usage
+from profile_game import TICK_SECONDS, frame_telemetry, loaded_components, redact_paths, usage
 
 
 class ProfileTests(unittest.TestCase):
@@ -31,6 +31,17 @@ class ProfileTests(unittest.TestCase):
 
     def test_home_path_redaction(self):
         self.assertEqual(redact_paths(os.path.expanduser("~/test")), "~/test")
+
+    def test_no_fps_from_empty_log_or_wrong_process(self):
+        for text in ["Timestamp headings only", "wine[456:a] metal-HUD: 0,0,5,10,2"]:
+            with self.subTest(text=text):
+                result = frame_telemetry(text, 123)
+                self.assertNotIn("frame_summary", result)
+                self.assertIn("frame_validation_error", result)
+
+    def test_verified_frames_are_included(self):
+        result = frame_telemetry("wine[123:a] metal-HUD: 0,0,5,10,2", 123)
+        self.assertEqual(result["frame_summary"]["fps_from_logged_intervals"], 100)
 
 
 if __name__ == "__main__":
