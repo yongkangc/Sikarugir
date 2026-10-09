@@ -1,0 +1,694 @@
+diff --git a/Configure/Classes/Controller/WineskinAppDelegate.h b/Configure/Classes/Controller/WineskinAppDelegate.h
+index 0269370..e1d01b7 100644
+--- a/Configure/Classes/Controller/WineskinAppDelegate.h
++++ b/Configure/Classes/Controller/WineskinAppDelegate.h
+@@ -132,6 +132,7 @@
+ 	BOOL winetricksCanceled;
+ 	NSDictionary *winetricksList;
+ 	NSDictionary *winetricksFilteredList;
++	NSMapTable *winetricksSortedKeys;
+ 	NSMutableDictionary *winetricksSelectedList;
+ 	NSArray *winetricksInstalledList;
+ 	NSArray *winetricksCachedList;
+diff --git a/Configure/Classes/Controller/WineskinAppDelegate.m b/Configure/Classes/Controller/WineskinAppDelegate.m
+index ff158ca..58e44b0 100644
+--- a/Configure/Classes/Controller/WineskinAppDelegate.m
++++ b/Configure/Classes/Controller/WineskinAppDelegate.m
+@@ -36,6 +36,26 @@ @implementation WineskinAppDelegate
+ @synthesize window;
+ @synthesize winetricksList, winetricksFilteredList, winetricksSelectedList, winetricksInstalledList, winetricksCachedList;
+ 
++- (NSDictionary *)winetricksFilteredList
++{
++    @synchronized (self) {
++        return winetricksFilteredList;
++    }
++}
++
++- (void)setWinetricksFilteredList:(NSDictionary *)list
++{
++    @synchronized (self) {
++        winetricksFilteredList = list;
++        // Package refresh and search filtering publish their completed dictionaries
++        // through this setter. Invalidate even when the same list is republished.
++        // Pointer identity keeps equal categories distinct and avoids hashing trees.
++        winetricksSortedKeys = [NSMapTable
++            mapTableWithKeyOptions:NSPointerFunctionsStrongMemory | NSPointerFunctionsObjectPointerPersonality
++            valueOptions:NSPointerFunctionsStrongMemory];
++    }
++}
++
+ -(NSString*)wrapperPath
+ {
+     return [[[[NSBundle mainBundle] bundlePath] stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
+@@ -300,7 +320,7 @@ - (IBAction)aboutWindow:(id)sender
+ //*************************************************************
+ - (NSArray*)runnableSubpathsInWrapperCDrive
+ {
+-    NSArray *filesTEMP1 = [fm subpathsOfDirectoryAtPath:self.cDrivePathForWrapper error:nil];
++    NSDirectoryEnumerator *filesTEMP1 = [fm enumeratorAtPath:self.cDrivePathForWrapper];
+     NSMutableArray *files1 = [[NSMutableArray alloc] init];
+     for (NSString *item in filesTEMP1) {
+         if ([[item lowercaseString] hasSuffix:@".exe"] || [[item lowercaseString] hasSuffix:@".bat"] ||
+@@ -351,7 +371,7 @@ - (IBAction)chooseSetupExecutableButtonPressed:(id)sender
+ 	NSString* wrapperPath = self.wrapperPath;
+ 
+     //make 1st array of .exe, .msi, and .bat files
+-    NSArray *files1 = self.runnableSubpathsInWrapperCDrive;
++    NSSet *files1 = [NSSet setWithArray:self.runnableSubpathsInWrapperCDrive];
+ 
+ 	//run install in Wine
+ 	[self systemCommand:[NSPathUtilities wineskinLauncherBinForPortAtPath:wrapperPath] withArgs:@[@"WSS-installer",selectedInstaller]];
+@@ -437,7 +457,7 @@ - (void)copyFolderRemovingOriginal:(BOOL)removeOriginal
+ 	[installerWindow orderOut:self];
+ 
+ 	//make 1st array of .exe, .msi, and .bat files
+-    NSArray *files1 = self.runnableSubpathsInWrapperCDrive;
++    NSSet *files1 = [NSSet setWithArray:self.runnableSubpathsInWrapperCDrive];
+ 
+ 	//copy or move the folder to Program Files
+ 	NSString *theFileNamePath = [[[panel URLs] objectAtIndex:0] path];
+@@ -2204,14 +2224,21 @@ - (id)outlineView:(NSOutlineView *)outlineView child:(NSInteger)childIndex ofIte
+     if (outlineView != winetricksOutlineView) {
+         return nil;
+     }
+-    if (!item) {
+-        item = winetricksFilteredList;
+-    }
+-	NSUInteger count = ([item valueForKey:WINETRICK_NAME] == nil ? [item count] : 0); // Set count to zero if the item is a package
+-    if (count <= childIndex) {
+-        return nil;
++    @synchronized (self) {
++        if (!item) {
++            item = winetricksFilteredList;
++        }
++        NSUInteger count = ([item valueForKey:WINETRICK_NAME] == nil ? [item count] : 0); // Set count to zero if the item is a package
++        if (childIndex < 0 || (NSUInteger)childIndex >= count) {
++            return nil;
++        }
++        NSArray *keys = [winetricksSortedKeys objectForKey:item];
++        if (!keys) {
++            keys = [[item allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];
++            [winetricksSortedKeys setObject:keys forKey:item];
++        }
++        return [item objectForKey:keys[childIndex]];
+     }
+-	return [item objectForKey:[[[item allKeys] sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)] objectAtIndex:childIndex]];
+ }
+ 
+ - (BOOL)outlineView:(NSOutlineView *)outlineView isItemExpandable:(id)item
+diff --git a/Configure/Classes/Extensions/NSTask+Extension.m b/Configure/Classes/Extensions/NSTask+Extension.m
+index 7eeec39..94c0ea9 100755
+--- a/Configure/Classes/Extensions/NSTask+Extension.m
++++ b/Configure/Classes/Extensions/NSTask+Extension.m
+@@ -67,18 +67,27 @@ +(NSString*)runProgram:(NSString*)program atRunPath:(NSString*)path withEnvironm
+         if (flags) [server setArguments:flags];
+         if (env)   [server setEnvironment:env];
+         
++        // No caller supplies stdin; a pipe with an open writer would never reach EOF.
++        [server setStandardInput:[NSFileHandle fileHandleWithNullDevice]];
++        if (!wait)
++        {
++            // A detached command must not block on an unconsumed stdout pipe.
++            [server setStandardOutput:[NSFileHandle fileHandleWithNullDevice]];
++            [server launch];
++            return @"";
++        }
++
+         NSPipe *outputPipe = [NSPipe pipe];
+-        [server setStandardInput:[NSPipe pipe]];
+         [server setStandardOutput:outputPipe];
+         [server launch];
+-        
+-        if (wait) [server waitUntilExit];
++
++        // Drain stdout before waiting so a full pipe cannot prevent the child exiting.
+         NSData *outputData = [[outputPipe fileHandleForReading] readDataToEndOfFile];
++        [server waitUntilExit];
+         
+         NSDebugLog(@"Instruction finished");
+         
+-        if (wait==YES) return [[NSString alloc] initWithData:outputData encoding:NSUTF8StringEncoding];
+-        else return @"";
++        return [[NSString alloc] initWithData:outputData encoding:NSUTF8StringEncoding];
+     }
+     @catch (NSException* exception)
+     {
+diff --git a/Tests/TaskPerformanceProbe.m b/Tests/TaskPerformanceProbe.m
+new file mode 100644
+index 0000000..9722ba7
+--- /dev/null
++++ b/Tests/TaskPerformanceProbe.m
+@@ -0,0 +1,87 @@
++#import <Cocoa/Cocoa.h>
++#import <unistd.h>
++#import "NSTask+Extension.h"
++#import "NSAlert+Extension.h"
++#import "NSFileManager+Extension.h"
++
++// Keep the process helper's error paths observable without opening application UI.
++@implementation NSAlert (PerformanceProbe)
+++(void)showAlertOfType:(NSAlertType)type withMessage:(NSString*)message
++{
++    fprintf(stderr, "%s\n", message.UTF8String);
++}
++@end
++
++@implementation NSFileManager (PerformanceProbe)
++-(BOOL)directoryExistsAtPath:(NSString*)path
++{
++    BOOL isDirectory = NO;
++    return [self fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory;
++}
++@end
++
++static void report(NSDictionary* result)
++{
++    NSData* json = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
++    fwrite(json.bytes, 1, json.length, stdout);
++    putchar('\n');
++}
++
++int main(int argc, const char* argv[])
++{
++    @autoreleasepool {
++        if (argc < 2) return 2;
++        NSString* mode = @(argv[1]);
++        if ([mode isEqualToString:@"child-large"]) {
++            char chunk[16384];
++            memset(chunk, 'A', sizeof(chunk));
++            for (int i = 0; i < 64; i++) {
++                size_t written = 0;
++                while (written < sizeof(chunk)) {
++                    ssize_t count = write(STDOUT_FILENO, chunk + written, sizeof(chunk) - written);
++                    if (count <= 0) return 3;
++                    written += count;
++                }
++            }
++            return 0;
++        }
++        if ([mode isEqualToString:@"child-sleep"]) {
++            usleep(1000000);
++            return 0;
++        }
++        if ([mode isEqualToString:@"child-stdin"]) {
++            char buffer[16];
++            while (read(STDIN_FILENO, buffer, sizeof(buffer)) > 0) {}
++            puts("EOF");
++            return 0;
++        }
++        NSString* executable = [@(argv[0]) stringByStandardizingPath];
++        NSString* childMode = [@{@"large":@"child-large", @"nowait":@"child-sleep",
++                                @"stdin":@"child-stdin", @"nowait-large":@"child-large"} objectForKey:mode];
++        BOOL wait = ![mode hasPrefix:@"nowait"];
++        NSTimeInterval start = NSProcessInfo.processInfo.systemUptime;
++        NSString* output;
++        if ([mode isEqualToString:@"small"]) {
++            output = [NSTask runProgram:@"/usr/bin/printf" atRunPath:nil
++                             withFlags:@[@"hello world\n"] wait:YES];
++        } else if ([mode isEqualToString:@"cwd"]) {
++            output = [NSTask runProgram:@"/bin/pwd" atRunPath:@"/private/tmp"
++                             withFlags:@[] wait:YES];
++        } else if (childMode) {
++            output = [NSTask runProgram:executable atRunPath:nil
++                             withFlags:@[childMode] wait:wait];
++        } else {
++            return 2;
++        }
++        NSTimeInterval elapsed = NSProcessInfo.processInfo.systemUptime - start;
++        report(@{@"mode":mode, @"seconds":@(elapsed), @"length":@(output.length),
++                 @"valid":@([mode isEqualToString:@"large"] ?
++                            (output.length == 1048576 &&
++                             [output rangeOfCharacterFromSet:[[NSCharacterSet characterSetWithCharactersInString:@"A"] invertedSet]].location == NSNotFound) :
++                            [mode isEqualToString:@"small"] ? [output isEqualToString:@"hello world\n"] :
++                            [mode isEqualToString:@"stdin"] ? [output isEqualToString:@"EOF\n"] :
++                            [mode isEqualToString:@"cwd"] ? [output isEqualToString:@"/private/tmp\n"] :
++                            output.length == 0)});
++    }
++    return 0;
++}
+diff --git a/Tests/run_performance_checks.py b/Tests/run_performance_checks.py
+new file mode 100644
+index 0000000..789af87
+--- /dev/null
++++ b/Tests/run_performance_checks.py
+@@ -0,0 +1,173 @@
++#!/usr/bin/env python3
++"""Compile isolated production methods with the macOS Command Line Tools.
++
++No installed wrapper is changed or launched. Optional --wrapper-drive only reads
++directory names when comparing the old and new executable scans.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import re
++import signal
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++TASK = ROOT / "Configure/Classes/Extensions/NSTask+Extension.m"
++CONTROLLER = "Configure/Classes/Controller/WineskinAppDelegate.m"
++
++
++def compile_probe(sources, binary, cocoa=False):
++    args = ["xcrun", "clang", "-O2", "-fobjc-arc", "-framework",
++            "Cocoa" if cocoa else "Foundation"]
++    if cocoa:
++        args += ["-include", str(ROOT / "Configure/OtherSources/Configure_Prefix.pch"),
++                 "-I", str(ROOT / "Configure/Classes/Extensions")]
++    subprocess.run(args + [str(p) for p in sources] + ["-o", str(binary)],
++                   check=True, capture_output=True, text=True)
++
++
++def run_task(binary, mode):
++    child = subprocess.Popen([str(binary), mode], stdout=subprocess.PIPE,
++                             stderr=subprocess.PIPE, text=True, start_new_session=True)
++    try:
++        stdout, stderr = child.communicate(timeout=3)
++        if child.returncode != 0:
++            raise AssertionError(f"{mode}: exit {child.returncode}: {stderr}")
++        result = json.loads(stdout)
++        assert result["valid"], result
++        if mode.startswith("nowait"):
++            assert result["seconds"] < 0.4, result
++        return result
++    finally:
++        # Only this test's process group can contain its deliberately sleeping child.
++        try:
++            os.killpg(child.pid, signal.SIGKILL)
++        except ProcessLookupError:
++            pass
++        child.communicate()
++
++
++def scan_method(source, name):
++    method = re.search(r"- \(NSArray\*\)runnableSubpathsInWrapperCDrive\n\{.*?\n\}",
++                       source, flags=re.S)
++    if not method:
++        raise AssertionError("Executable scan method not found")
++    return method.group().replace("runnableSubpathsInWrapperCDrive", name, 1)
++
++
++def diff_method(source, name):
++    snapshot = re.search(r"(?:NSArray|NSSet) \*files1 = .*?;", source).group()
++    snapshot = snapshot.replace("self.runnableSubpathsInWrapperCDrive", "before")
++    block = re.search(r"NSMutableArray \*finalList =.*?//display warning", source,
++                      flags=re.S).group().rsplit("//display warning", 1)[0]
++    return (f"static NSArray* {name}(NSArray* before, NSArray* files2) {{\n"
++            + snapshot + "\n" + block + "\nreturn finalList;\n}\n")
++
++
++def benchmark_source(before, after):
++    # Extract the actual production methods so the probe cannot drift into a
++    # separately implemented approximation of the code under review.
++    return r'''
++#import <Foundation/Foundation.h>
++static NSFileManager* fm;
++@interface ScanProbe : NSObject
++@property (nonatomic, copy) NSString* cDrivePathForWrapper;
++@end
++@implementation ScanProbe
++''' + scan_method(before, "beforeScan") + scan_method(after, "afterScan") + r'''
++@end
++''' + diff_method(before, "beforeDiff") + diff_method(after, "afterDiff") + r'''
++static void report(NSDictionary* result) {
++    NSData* json = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
++    fwrite(json.bytes, 1, json.length, stdout); putchar('\n');
++}
++int main(int argc, const char* argv[]) {
++    @autoreleasepool {
++        NSMutableArray* before = [NSMutableArray array];
++        for (int i = 0; i < 10000; i++)
++            [before addObject:[NSString stringWithFormat:@"Program Files/App%d/tool.exe", i]];
++        NSMutableArray* after = [before mutableCopy];
++        [after addObjectsFromArray:@[@"Program Files/New/Game.EXE", @"new.bat", @"new.msi",
++                                    @"users/Wineskin/helper.exe", @"windows/Installer/setup.exe",
++                                    @"nothing.exe", @"Users/wineskin/case-sensitive.exe"]];
++        NSArray* expected = @[@"\"C:/Program Files/New/Game.EXE\"", @"\"C:/new.bat\"",
++                              @"\"C:/new.msi\"", @"\"C:/Users/wineskin/case-sensitive.exe\""];
++        NSTimeInterval start = NSProcessInfo.processInfo.systemUptime;
++        NSArray* oldDiff = beforeDiff(before, after);
++        double oldSeconds = NSProcessInfo.processInfo.systemUptime - start;
++        start = NSProcessInfo.processInfo.systemUptime;
++        NSArray* newDiff = afterDiff(before, after);
++        double newSeconds = NSProcessInfo.processInfo.systemUptime - start;
++        if (![oldDiff isEqualToArray:expected] || ![newDiff isEqualToArray:expected]) return 4;
++        if (beforeDiff(@[], @[]).count || afterDiff(@[], @[]).count) return 5;
++        report(@{@"benchmark":@"installer_difference", @"existing_executables":@(before.count),
++                 @"before_seconds":@(oldSeconds), @"after_seconds":@(newSeconds),
++                 @"speedup":@(oldSeconds / newSeconds), @"same_order_and_exclusions":@YES});
++        if (argc > 1) {
++            fm = NSFileManager.defaultManager;
++            ScanProbe* scan = [ScanProbe new]; scan.cDrivePathForWrapper = @(argv[1]);
++            // Warm filesystem caches for both implementations, then alternate
++            // the order across measured passes to reduce order bias.
++            NSArray* oldScan = [scan beforeScan]; NSArray* newScan = [scan afterScan];
++            if (![oldScan isEqualToArray:newScan]) return 6;
++            double oldTotal = 0, newTotal = 0;
++            for (int i = 0; i < 4; i++) {
++                for (int j = 0; j < 2; j++) {
++                    @autoreleasepool {
++                        BOOL old = ((i + j) % 2 == 0);
++                        start = NSProcessInfo.processInfo.systemUptime;
++                        NSArray* result = old ? [scan beforeScan] : [scan afterScan];
++                        double seconds = NSProcessInfo.processInfo.systemUptime - start;
++                        if (![result isEqualToArray:oldScan]) return 7;
++                        if (old) oldTotal += seconds; else newTotal += seconds;
++                    }
++                }
++            }
++            report(@{@"benchmark":@"real_wrapper_scan", @"runnable_paths":@(oldScan.count),
++                     @"before_seconds_mean":@(oldTotal / 4),
++                     @"after_seconds_mean":@(newTotal / 4), @"identical_ordered_results":@YES});
++        }
++    }
++    return 0;
++}
++'''
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--wrapper-drive", type=Path)
++    parser.add_argument("--output", type=Path)
++    args = parser.parse_args()
++    results = []
++    with tempfile.TemporaryDirectory(prefix="sikarugir-performance-") as directory:
++        temp = Path(directory)
++        task_binary = temp / "task-probe"
++        compile_probe([TASK, ROOT / "Tests/TaskPerformanceProbe.m"], task_binary, cocoa=True)
++        for mode in ["small", "cwd", "large", "stdin", "nowait", "nowait-large"]:
++            result = run_task(task_binary, mode)
++            results.append(result)
++            print(json.dumps(result), flush=True)
++        before = subprocess.run(["git", "show", f"HEAD:{CONTROLLER}"], cwd=ROOT,
++                                capture_output=True, text=True, check=True).stdout
++        after = (ROOT / CONTROLLER).read_text()
++        scan_source = temp / "scan-probe.m"
++        scan_source.write_text(benchmark_source(before, after))
++        scan_binary = temp / "scan-probe"
++        compile_probe([scan_source], scan_binary)
++        command = [str(scan_binary)]
++        if args.wrapper_drive:
++            command.append(str(args.wrapper_drive.resolve(strict=True)))
++        run = subprocess.run(command, capture_output=True, text=True, check=True, timeout=60)
++        for line in run.stdout.splitlines():
++            result = json.loads(line)
++            results.append(result)
++            print(json.dumps(result), flush=True)
++    if args.output:
++        args.output.write_text(json.dumps(results, indent=2) + "\n")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/Tests/profile_winetricks.py b/Tests/profile_winetricks.py
+new file mode 100644
+index 0000000..74947c5
+--- /dev/null
++++ b/Tests/profile_winetricks.py
+@@ -0,0 +1,280 @@
++#!/usr/bin/env python3
++"""Measure and CPU-sample extracted production Winetricks data-source methods.
++
++Uses synthetic package dictionaries, not an installed wrapper. Requires macOS
++Command Line Tools; Instruments and full Xcode are not required.
++"""
++
++import argparse
++import json
++from pathlib import Path
++import re
++import subprocess
++import tempfile
++
++ROOT = Path(__file__).resolve().parents[1]
++CONTROLLER = "Configure/Classes/Controller/WineskinAppDelegate.m"
++
++
++def method(source, signature, required=True):
++    match = re.search(re.escape(signature) + r"\n\{.*?\n\}", source, re.S)
++    if not match and required:
++        raise AssertionError(f"Production method not found: {signature}")
++    return match.group() if match else ""
++
++
++def probe_source(source):
++    # Compile the production callbacks and filter, rather than approximations.
++    methods = [
++        method(source, "- (NSDictionary *)winetricksFilteredList", required=False),
++        method(source, "- (void)setWinetricksFilteredList:(NSDictionary *)list", required=False),
++        method(source, "- (IBAction)winetricksSearchFilter:(id)sender"),
++        method(source, "- (id)outlineView:(NSOutlineView *)outlineView child:(NSInteger)childIndex ofItem:(id)item"),
++        method(source, "- (BOOL)outlineView:(NSOutlineView *)outlineView isItemExpandable:(id)item"),
++        method(source, "- (NSInteger)outlineView:(NSOutlineView *)outlineView numberOfChildrenOfItem:(id)item"),
++    ]
++    return r'''
++#import <Foundation/Foundation.h>
++#define WINETRICK_NAME @"WS-Name"
++#define WINETRICK_DESCRIPTION @"WS-Description"
++@class NSOutlineView;
++@interface OutlineStub : NSObject
++@property NSUInteger reloads;
++- (void)reloadData;
++@end
++@implementation OutlineStub
++- (void)reloadData { self.reloads++; }
++@end
++@interface SearchStub : NSObject
++@property NSString *stringValue;
++@end
++@implementation SearchStub
++@end
++@interface TreeProbe : NSObject {
++    BOOL winetricksDone;
++    OutlineStub *winetricksOutlineView;
++    NSDictionary *winetricksList, *winetricksFilteredList;
++    NSMapTable *winetricksSortedKeys;
++}
++@property (strong) NSDictionary *winetricksList;
++@property (strong) NSDictionary *winetricksFilteredList;
++- (id)outlineView:(NSOutlineView *)view child:(NSInteger)index ofItem:(id)item;
++- (BOOL)outlineView:(NSOutlineView *)view isItemExpandable:(id)item;
++- (NSInteger)outlineView:(NSOutlineView *)view numberOfChildrenOfItem:(id)item;
++- (void)winetricksSearchFilter:(id)sender;
++- (void)setReady:(BOOL)ready;
++- (NSOutlineView *)view;
++@end
++@implementation TreeProbe
++@synthesize winetricksList, winetricksFilteredList;
++- (instancetype)init {
++    if ((self = [super init])) { winetricksDone = YES; winetricksOutlineView = [OutlineStub new]; }
++    return self;
++}
++- (void)setReady:(BOOL)ready { winetricksDone = ready; }
++- (NSOutlineView *)view { return (NSOutlineView *)winetricksOutlineView; }
++''' + "\n".join(methods) + r'''
++@end
++
++static void require(BOOL valid, NSString *message) {
++    if (!valid) { fprintf(stderr, "%s\n", message.UTF8String); exit(4); }
++}
++static NSUInteger walk(TreeProbe *probe, NSDictionary *tree) {
++    NSOutlineView *view = probe.view;
++    NSArray *categories = [tree.allKeys sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];
++    require([probe outlineView:view numberOfChildrenOfItem:nil] == categories.count, @"Root count");
++    NSUInteger visited = 0;
++    for (NSUInteger i = 0; i < categories.count; i++) {
++        NSDictionary *category = [probe outlineView:view child:i ofItem:nil];
++        require(category == tree[categories[i]], @"Category order/identity");
++        require([probe outlineView:view isItemExpandable:category], @"Category expansion");
++        NSArray *packages = [category.allKeys sortedArrayUsingSelector:@selector(caseInsensitiveCompare:)];
++        require([probe outlineView:view numberOfChildrenOfItem:category] == packages.count, @"Package count");
++        for (NSUInteger j = 0; j < packages.count; j++) {
++            id package = [probe outlineView:view child:j ofItem:category];
++            require(package == category[packages[j]], @"Package order/identity");
++            require(![probe outlineView:view isItemExpandable:package], @"Leaf expansion");
++            require([probe outlineView:view numberOfChildrenOfItem:package] == 0, @"Leaf count");
++            require([probe outlineView:view child:0 ofItem:package] == nil, @"Leaf lookup");
++            visited++;
++        }
++        require([probe outlineView:view child:-1 ofItem:category] == nil, @"Negative index");
++        require([probe outlineView:view child:packages.count ofItem:category] == nil, @"Category bounds");
++    }
++    require([probe outlineView:view child:categories.count ofItem:nil] == nil, @"Root bounds");
++    return visited;
++}
++static NSDictionary *fixture(void) {
++    // 1,000 synthetic packages across six uneven categories, including mixed case.
++    NSArray *names = @[@"dlls", @"Fonts", @"apps", @"games", @"Settings", @"benchmarks"];
++    NSArray *counts = @[@600, @60, @180, @100, @50, @10];
++    NSMutableDictionary *tree = [NSMutableDictionary dictionary];
++    for (NSUInteger c = 0; c < names.count; c++) {
++        NSMutableDictionary *category = [NSMutableDictionary dictionary];
++        for (NSInteger i = [counts[c] integerValue] - 1; i >= 0; i--) {
++            NSString *name = [NSString stringWithFormat:@"%@_tool_%04ld", i % 2 ? @"Z" : @"a", (long)i];
++            category[name] = @{WINETRICK_NAME:name, WINETRICK_DESCRIPTION:@"Synthetic package"};
++        }
++        tree[names[c]] = category;
++    }
++    return tree;
++}
++static void validate(TreeProbe *probe, NSDictionary *tree) {
++    probe.winetricksList = tree;
++    probe.winetricksFilteredList = tree;
++    require(walk(probe, tree) == 1000, @"Full fixture");
++    NSOutlineView *wrongView = (NSOutlineView *)[OutlineStub new];
++    require([probe outlineView:wrongView child:0 ofItem:nil] == nil, @"Wrong view child");
++    require([probe outlineView:wrongView numberOfChildrenOfItem:nil] == 0, @"Wrong view count");
++    require(![probe outlineView:wrongView isItemExpandable:tree], @"Wrong view expansion");
++    [probe setReady:NO];
++    require([probe outlineView:probe.view child:0 ofItem:nil] == nil, @"Busy child");
++    require([probe outlineView:probe.view numberOfChildrenOfItem:nil] == 0, @"Busy count");
++    require(![probe outlineView:probe.view isItemExpandable:tree], @"Busy expansion");
++    [probe setReady:YES];
++    SearchStub *search = [SearchStub new];
++    search.stringValue = @" TOOL_0001 "; [probe winetricksSearchFilter:search];
++    require(walk(probe, probe.winetricksFilteredList) == 6, @"Name filter/cache replacement");
++    search.stringValue = @"SYNTHETIC"; [probe winetricksSearchFilter:search];
++    require(walk(probe, probe.winetricksFilteredList) == 1000, @"Description filter");
++    search.stringValue = @"does-not-exist"; [probe winetricksSearchFilter:search];
++    require(walk(probe, probe.winetricksFilteredList) == 0, @"Empty filter");
++    search.stringValue = @"  "; [probe winetricksSearchFilter:search];
++    require(probe.winetricksFilteredList == tree && walk(probe, tree) == 1000, @"Clear filter");
++    // Equal dictionaries must keep their own package object identities.
++    NSMutableDictionary *a = [tree[@"dlls"] mutableCopy], *b = [NSMutableDictionary dictionary];
++    for (NSString *key in a) b[key] = [a[key] mutableCopy];
++    NSDictionary *equalTree = @{@"first":a, @"second":b};
++    probe.winetricksFilteredList = equalTree;
++    require(walk(probe, equalTree) == 1200, @"Equal category identities");
++    // Refresh must invalidate cached keys even when the dictionary instance is reused.
++    a[@"000_new"] = @{WINETRICK_NAME:@"000_new", WINETRICK_DESCRIPTION:@"New package"};
++    probe.winetricksFilteredList = equalTree;
++    require(walk(probe, equalTree) == 1201, @"Same-instance refresh");
++    probe.winetricksFilteredList = nil;
++    require([probe outlineView:probe.view child:0 ofItem:nil] == nil, @"Nil list");
++}
++static NSUInteger render(TreeProbe *probe) {
++    NSUInteger visited = 0;
++    NSInteger roots = [probe outlineView:probe.view numberOfChildrenOfItem:nil];
++    for (NSInteger i = 0; i < roots; i++) {
++        id category = [probe outlineView:probe.view child:i ofItem:nil];
++        NSInteger count = [probe outlineView:probe.view numberOfChildrenOfItem:category];
++        for (NSInteger j = 0; j < count; j++) {
++            id package = [probe outlineView:probe.view child:j ofItem:category];
++            require(package != nil, @"Missing rendered package");
++            visited++;
++        }
++    }
++    return visited;
++}
++int main(int argc, const char *argv[]) {
++    @autoreleasepool {
++        NSDictionary *tree = fixture();
++        TreeProbe *probe = [TreeProbe new];
++        validate(probe, tree);
++        BOOL profiling = argc > 1 && strcmp(argv[1], "profile") == 0;
++        if (profiling) {
++            probe.winetricksFilteredList = tree;
++            puts("ready"); fflush(stdout);
++            double end = NSProcessInfo.processInfo.systemUptime + 8;
++            NSUInteger passes = 0;
++            while (NSProcessInfo.processInfo.systemUptime < end) {
++                @autoreleasepool { require(render(probe) == 1000, @"Profile render"); passes++; }
++            }
++            printf("{\"profile_passes\":%lu}\n", (unsigned long)passes);
++        } else {
++            // Include invalidation/first sort in cold passes; also time cached redraws.
++            NSMutableArray *cold = [NSMutableArray array], *warm = [NSMutableArray array];
++            for (int i = 0; i < 5; i++) {
++                @autoreleasepool {
++                    double start = NSProcessInfo.processInfo.systemUptime;
++                    probe.winetricksFilteredList = tree;
++                    require(render(probe) == 1000, @"Cold render");
++                    [cold addObject:@(NSProcessInfo.processInfo.systemUptime - start)];
++                    start = NSProcessInfo.processInfo.systemUptime;
++                    require(render(probe) == 1000, @"Warm render");
++                    [warm addObject:@(NSProcessInfo.processInfo.systemUptime - start)];
++                }
++            }
++            NSDictionary *result = @{ @"packages":@1000, @"categories":@6,
++                @"cold_seconds":cold, @"warm_seconds":warm, @"regressions_passed":@YES };
++            NSData *json = [NSJSONSerialization dataWithJSONObject:result options:0 error:nil];
++            fwrite(json.bytes, 1, json.length, stdout); putchar('\n');
++        }
++    }
++    return 0;
++}
++'''
++
++
++def compile_variant(source, name, directory):
++    file = directory / f"winetricks-{name}.m"
++    binary = directory / f"winetricks-{name}"
++    file.write_text(probe_source(source))
++    subprocess.run(["xcrun", "clang", "-O2", "-g", "-fobjc-arc", "-framework",
++                    "Foundation", str(file), "-o", str(binary)], check=True,
++                   capture_output=True, text=True)
++    return binary
++
++
++def collect_profile(binary, directory):
++    child = subprocess.Popen([str(binary), "profile"], stdout=subprocess.PIPE,
++                             stderr=subprocess.PIPE, text=True)
++    try:
++        assert child.stdout.readline().strip() == "ready"
++        profile = directory / f"{binary.name}-sample.txt"
++        subprocess.run(["/usr/bin/sample", str(child.pid), "5", "1", "-file", str(profile)],
++                       check=True, capture_output=True, text=True, timeout=15)
++        stdout, stderr = child.communicate(timeout=12)
++        if child.returncode:
++            raise AssertionError(stderr)
++        return {"sample": str(profile), **json.loads(stdout)}
++    finally:
++        if child.poll() is None:
++            child.kill()
++        child.communicate()
++
++
++def run(directory, profiling):
++    before = subprocess.run(["git", "show", f"HEAD:{CONTROLLER}"], cwd=ROOT,
++                            check=True, capture_output=True, text=True).stdout
++    after = (ROOT / CONTROLLER).read_text()
++    binaries = {name: compile_variant(source, name, directory)
++                for name, source in [("before", before), ("after", after)]}
++    # Alternate complete batches to reduce order bias; each batch has five passes.
++    results = {name: {"cold_seconds": [], "warm_seconds": []} for name in binaries}
++    for name in ["before", "after", "after", "before"]:
++        result = json.loads(subprocess.run([str(binaries[name])], check=True,
++                            capture_output=True, text=True, timeout=30).stdout)
++        for key in ["cold_seconds", "warm_seconds"]:
++            results[name][key] += result[key]
++        results[name].update({key: result[key] for key in
++                            ["packages", "categories", "regressions_passed"]})
++    for name, result in results.items():
++        for kind in ["cold", "warm"]:
++            result[f"{kind}_seconds_mean"] = sum(result[f"{kind}_seconds"]) / len(result[f"{kind}_seconds"])
++        if profiling:
++            result.update(collect_profile(binaries[name], directory))
++    return results
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--profile-directory", type=Path,
++                        help="Keep probe binaries/sources and collect five-second CPU samples")
++    parser.add_argument("--output", type=Path)
++    args = parser.parse_args()
++    if args.profile_directory:
++        args.profile_directory.mkdir(parents=True, exist_ok=True)
++        results = run(args.profile_directory.resolve(), profiling=True)
++    else:
++        with tempfile.TemporaryDirectory(prefix="sikarugir-winetricks-") as temp:
++            results = run(Path(temp), profiling=False)
++    print(json.dumps(results, indent=2))
++    if args.output:
++        args.output.write_text(json.dumps(results, indent=2) + "\n")
++
++
++if __name__ == "__main__":
++    main()

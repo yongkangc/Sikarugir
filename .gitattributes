@@ -1,0 +1,2 @@
+# Preserve upstream whitespace in patch context; check its target source separately.
+patches/*.patch -whitespace

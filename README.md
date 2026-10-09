@@ -1,4 +1,10 @@
 # Sikarugir
+
+This fork adds a measured performance investigation on Apple Silicon. See
+[the profiling workflow](docs/PERFORMANCE.md) and
+[the first local baseline](docs/BASELINE-2026-10-09.md).
+It currently contains profiling tools and a tested configurator patch; it does
+not yet provide a rebuilt Wine engine or a demonstrated game FPS improvement.
 A wrapper project that's the successor to Wineskin\
 This project supports *macOS 14.6* or later.
 
