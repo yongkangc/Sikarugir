@@ -1,0 +1,164 @@
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index fbb59d8..236e0f8 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -133,6 +133,31 @@ public:
+     return dynamic->immediateMappedMemory();
+   }
+ 
++  void
++  InvalidateDynamicResourceBindings(ID3D11Resource *pResource, UINT bind_flags) {
++    auto resource = GetResourceCommon(pResource);
++    if (bind_flags & D3D11_BIND_VERTEX_BUFFER) {
++      for (auto [slot, binding] : state_.InputAssembler.VertexBuffers) {
++        if (binding.Buffer.ptr() == resource)
++          state_.InputAssembler.VertexBuffers.set_dirty(slot);
++      }
++    }
++    for (auto &stage : state_.ShaderStages) {
++      if (bind_flags & D3D11_BIND_CONSTANT_BUFFER) {
++        for (auto [slot, binding] : stage.ConstantBuffers) {
++          if (binding.Buffer.ptr() == resource)
++            stage.ConstantBuffers.set_dirty(slot);
++        }
++      }
++      if (bind_flags & D3D11_BIND_SHADER_RESOURCE) {
++        for (auto [slot, binding] : stage.SRVs) {
++          if (binding.SRV->resource_.ptr() == resource)
++            stage.SRVs.set_dirty(slot);
++        }
++      }
++    }
++  }
++
+   HRESULT
+   STDMETHODCALLTYPE
+   Map(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
+@@ -152,19 +177,7 @@ public:
+       case D3D11_MAP_READ_WRITE:
+         return E_INVALIDARG;
+       case D3D11_MAP_WRITE_DISCARD: {
+-        if (bind_flag & D3D11_BIND_VERTEX_BUFFER) {
+-          state_.InputAssembler.VertexBuffers.set_dirty();
+-        }
+-        if (bind_flag & D3D11_BIND_CONSTANT_BUFFER) {
+-          for (auto &stage : state_.ShaderStages) {
+-            stage.ConstantBuffers.set_dirty();
+-          }
+-        }
+-        if (bind_flag & D3D11_BIND_SHADER_RESOURCE) {
+-          for (auto &stage : state_.ShaderStages) {
+-            stage.SRVs.set_dirty();
+-          }
+-        }
++        InvalidateDynamicResourceBindings(pResource, bind_flag);
+ 
+         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
+         pMappedResource->RowPitch = buffer_length;
+@@ -188,9 +201,7 @@ public:
+       case D3D11_MAP_WRITE_NO_OVERWRITE:
+         return E_INVALIDARG;
+       case D3D11_MAP_WRITE_DISCARD: {
+-        for (auto &stage : state_.ShaderStages) {
+-          stage.SRVs.set_dirty();
+-        }
++        InvalidateDynamicResourceBindings(pResource, D3D11_BIND_SHADER_RESOURCE);
+ 
+         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
+         pMappedResource->RowPitch = row_pitch;
+@@ -207,9 +218,7 @@ public:
+       case D3D11_MAP_READ_WRITE:
+         return E_INVALIDARG;
+       case D3D11_MAP_WRITE_DISCARD: {
+-        for (auto &stage : state_.ShaderStages) {
+-          stage.SRVs.set_dirty();
+-        }
++        InvalidateDynamicResourceBindings(pResource, D3D11_BIND_SHADER_RESOURCE);
+ 
+         dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id), false);
+         EmitST([allocation = dynamic->immediateName(),
+diff --git a/src/d3d11/d3d11_pipeline.hpp b/src/d3d11/d3d11_pipeline.hpp
+index 1a9c4f4..e15e066 100644
+--- a/src/d3d11/d3d11_pipeline.hpp
++++ b/src/d3d11/d3d11_pipeline.hpp
+@@ -56,6 +56,7 @@ template <> struct hash<MTL_GRAPHICS_PIPELINE_DESC> {
+     state.add((size_t)v.DomainShader);
+     state.add((size_t)v.GeometryShader);
+     state.add((size_t)v.InputLayout);
++    state.add((size_t)v.SOLayout);
+     /* don't add blend */
+     // state.add((size_t)v.BlendState);
+     state.add((size_t)v.DepthStencilFormat);
+@@ -126,6 +127,7 @@ template <> struct equal_to<MTL_GRAPHICS_PIPELINE_DESC> {
+            (x.DomainShader == y.DomainShader) && 
+            (x.GeometryShader == y.GeometryShader) &&
+            (x.InputLayout == y.InputLayout) &&
++           (x.SOLayout == y.SOLayout) &&
+            (x.DepthStencilFormat == y.DepthStencilFormat) &&
+            (x.TopologyClass == y.TopologyClass) &&
+            (x.RasterizationEnabled == y.RasterizationEnabled) &&
+diff --git a/src/d3d11/d3d11_pipeline_cache.cpp b/src/d3d11/d3d11_pipeline_cache.cpp
+index ec17d04..b843165 100644
+--- a/src/d3d11/d3d11_pipeline_cache.cpp
++++ b/src/d3d11/d3d11_pipeline_cache.cpp
+@@ -381,11 +381,15 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
+                            MTLCompiledGraphicsPipeline **ppPipeline) override {
+     std::lock_guard<dxmt::mutex> lock(mutex_);
+ 
+-    if (auto iter = pipelines_.find(*pDesc); iter != pipelines_.end()) {
++    // Ordinary vertex/fragment pipelines do not specialize on the index format.
++    // Geometry and tessellation pipelines keep their original descriptors.
++    auto desc = *pDesc;
++    desc.IndexBufferFormat = SM50_INDEX_BUFFER_FORMAT_NONE;
++    if (auto iter = pipelines_.find(desc); iter != pipelines_.end()) {
+       *ppPipeline = iter->second.get();
+       return;
+     }
+-    auto [iter, inserted] = pipelines_.insert({*pDesc, CreateGraphicsPipeline(device, pDesc)});
++    auto [iter, inserted] = pipelines_.insert({desc, CreateGraphicsPipeline(device, &desc)});
+     if (!inserted) {
+       D3D11_ASSERT(0 && "duplicated graphics pipeline");
+     } else {
+diff --git a/src/dxmt/dxmt_tasks.hpp b/src/dxmt/dxmt_tasks.hpp
+index 6762d47..a7ecf18 100644
+--- a/src/dxmt/dxmt_tasks.hpp
++++ b/src/dxmt/dxmt_tasks.hpp
+@@ -56,7 +56,11 @@ template <typename Task> task_scheduler<Task>::task_scheduler() {
+ }
+ 
+ template <typename Task> task_scheduler<Task>::~task_scheduler() {
+-  destroyed.store(true);
++  {
++    // Serialize with the wait predicate so shutdown cannot lose its wakeup.
++    std::unique_lock<dxmt::mutex> lock(worker_mutex_);
++    destroyed.store(true);
++  }
+   worker_cond_.notify_all();
+ 
+   for (auto &worker : workers_) {
+@@ -107,14 +111,19 @@ task_scheduler<Task>::worker_func() {
+           task_continuation_.erase(range.first, range.second);
+           task_trait.set_done(continuation);
+         }
+-        {
+-          std::unique_lock<dxmt::mutex> lock(worker_mutex_);
+-          for (auto &task : continuation_buffer) {
+-            task_continuation_queue_.push(task);
++        if (!continuation_buffer.empty()) {
++          {
++            std::unique_lock<dxmt::mutex> lock(worker_mutex_);
++            for (auto &task : continuation_buffer) {
++              task_continuation_queue_.push(task);
++            }
+           }
++          if (continuation_buffer.size() == 1)
++            worker_cond_.notify_one();
++          else
++            worker_cond_.notify_all();
++          continuation_buffer.clear();
+         }
+-        worker_cond_.notify_all();
+-        continuation_buffer.clear();
+       } else {
+         std::unique_lock<dxmt::mutex> lock(deps_mutex_);
+         // spurious dependency

@@ -1,5 +1,8 @@
 # Configurator patch
 
+The downstream gameplay implementation and regression results are documented in
+[DXMT-FIXES-2026-10-10.md](../docs/DXMT-FIXES-2026-10-10.md).
+
 `configurator-performance.patch` targets
 [Sikarugir-foss-sources](https://github.com/Sikarugir-App/Sikarugir-foss-sources)
 at `4be1b048f8df14b073a6e39e8245bbb52c6a71c0` (Configure 1.0.4).
@@ -50,3 +53,26 @@ This isolated validation does not replace a full DXMT build or game testing.
 The local saving was approximately 0.94 microseconds per call, far below the
 observed 10 ms presentation interval. It is a small cleanup rather than an
 explanation for the game's performance limit.
+
+## DXMT gameplay and scheduler fixes
+
+`dxmt-gameplay-performance.patch` contains targeted dynamic-resource binding
+invalidation, compiler continuation notifications and shutdown locking, ordinary
+pipeline index-format normalization, and stream-output layout cache-key identity.
+It applies to both DXMT revisions listed above, without requiring the HUD patch.
+The full source implementation is in
+[yongkangc/dxmt](https://github.com/yongkangc/dxmt/tree/gameplay-performance).
+
+From a clean DXMT checkout at either supported revision:
+
+```sh
+git apply --check /path/to/Sikarugir/patches/dxmt-gameplay-performance.patch
+git apply /path/to/Sikarugir/patches/dxmt-gameplay-performance.patch
+python3 /path/to/Sikarugir/tools/validate_dxmt_gameplay.py --source .
+python3 /path/to/Sikarugir/tools/validate_dxmt_gameplay.py --source . --architecture x86_64
+python3 /path/to/Sikarugir/tools/validate_dxmt_gameplay.py --source . --sanitize
+```
+
+These source checks substitute Metal/resource/Win32 objects. They do not build or
+install an engine, validate actual rendered output, or demonstrate a game FPS gain.
+Existing LGPL source notices are preserved. No runtime or game files are included.

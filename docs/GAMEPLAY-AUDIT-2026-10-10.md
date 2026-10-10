@@ -1,5 +1,9 @@
 # Gameplay code audit: 10 October 2026
 
+The concrete fixes are now implemented in the user's downstream DXMT fork; see
+[implementation and regression results](DXMT-FIXES-2026-10-10.md). The findings
+below record the original audited source behavior.
+
 The best first performance candidate is narrower invalidation of dynamic-buffer
 bindings. The strongest hitch candidates are compiler scheduling and redundant
 ordinary pipeline variants. A separate stream-output cache-key omission warrants

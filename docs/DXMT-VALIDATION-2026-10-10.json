@@ -1,0 +1,142 @@
+{
+  "runtime_commit": "332cee27aae3496d2d93e8f062145eada13a776b",
+  "runtime_branch": "gameplay-performance",
+  "date": "2026-10-10",
+  "full_engine_built": false,
+  "runtime_installed": false,
+  "gameplay_cost_measured": false,
+  "tested_source_files_sha256": {
+    "src/d3d11/d3d11_context_imm.cpp": "ab54e4ea557d773c46990ffc20c68d8384f92f717b54b9a4f7d1115dc0b45478",
+    "src/d3d11/d3d11_pipeline.hpp": "58369bddbee4140aed41b5a1d3f594db343570fd96082abdefcade89ffb783c2",
+    "src/d3d11/d3d11_pipeline_cache.cpp": "6eaa4233f2796e88514abf36a20b0aa3d1fd80369a900956a917efa73b888f96",
+    "src/dxmt/dxmt_tasks.hpp": "9b40f8dcdddff0a5bbc5a2106d8b4bd7d44cefec1c0d128592b963d668f36d06"
+  },
+  "source_regressions": [
+    {
+      "binding_regressions": "passed",
+      "pipeline_regressions": "passed",
+      "scheduler_regressions": "passed",
+      "shutdown_wait_race": "passed",
+      "unbound_constant_buffer_dirty_slots": 0,
+      "constant_buffer_dirty_slots_for_single_binding": 1,
+      "ordinary_index_variants_builds": 1,
+      "geometry_index_variants_builds": 3,
+      "tessellation_index_variants_builds": 3,
+      "completion_broadcasts_without_dependents": 0,
+      "shader_and_render_validation": false,
+      "source_revision": "working-tree",
+      "architecture": "arm64",
+      "repeat": 10,
+      "sanitizers": [],
+      "scope": "extracted production code with substitute resource/Metal/Win32 objects",
+      "gameplay_cost_measured": false
+    },
+    {
+      "binding_regressions": "passed",
+      "pipeline_regressions": "passed",
+      "scheduler_regressions": "passed",
+      "shutdown_wait_race": "passed",
+      "unbound_constant_buffer_dirty_slots": 0,
+      "constant_buffer_dirty_slots_for_single_binding": 1,
+      "ordinary_index_variants_builds": 1,
+      "geometry_index_variants_builds": 3,
+      "tessellation_index_variants_builds": 3,
+      "completion_broadcasts_without_dependents": 0,
+      "shader_and_render_validation": false,
+      "source_revision": "working-tree",
+      "architecture": "x86_64",
+      "repeat": 10,
+      "sanitizers": [],
+      "scope": "extracted production code with substitute resource/Metal/Win32 objects",
+      "gameplay_cost_measured": false
+    },
+    {
+      "binding_regressions": "passed",
+      "pipeline_regressions": "passed",
+      "scheduler_regressions": "passed",
+      "shutdown_wait_race": "passed",
+      "unbound_constant_buffer_dirty_slots": 0,
+      "constant_buffer_dirty_slots_for_single_binding": 1,
+      "ordinary_index_variants_builds": 1,
+      "geometry_index_variants_builds": 3,
+      "tessellation_index_variants_builds": 3,
+      "completion_broadcasts_without_dependents": 0,
+      "shader_and_render_validation": false,
+      "source_revision": "working-tree",
+      "architecture": "arm64",
+      "repeat": 5,
+      "sanitizers": [
+        "address",
+        "undefined"
+      ],
+      "scope": "extracted production code with substitute resource/Metal/Win32 objects",
+      "gameplay_cost_measured": false
+    }
+  ],
+  "patch_checks": [
+    {
+      "binding_regressions": "passed",
+      "pipeline_regressions": "passed",
+      "scheduler_regressions": "passed",
+      "shutdown_wait_race": "passed",
+      "unbound_constant_buffer_dirty_slots": 0,
+      "constant_buffer_dirty_slots_for_single_binding": 1,
+      "ordinary_index_variants_builds": 1,
+      "geometry_index_variants_builds": 3,
+      "tessellation_index_variants_builds": 3,
+      "completion_broadcasts_without_dependents": 0,
+      "shader_and_render_validation": false,
+      "source_revision": "working-tree",
+      "architecture": "arm64",
+      "repeat": 1,
+      "sanitizers": [],
+      "scope": "extracted production code with substitute resource/Metal/Win32 objects",
+      "gameplay_cost_measured": false,
+      "patch_base_revision": "7c8dee1c2d73415301ceb7d1fa810861cef4cd67"
+    },
+    {
+      "binding_regressions": "passed",
+      "pipeline_regressions": "passed",
+      "scheduler_regressions": "passed",
+      "shutdown_wait_race": "passed",
+      "unbound_constant_buffer_dirty_slots": 0,
+      "constant_buffer_dirty_slots_for_single_binding": 1,
+      "ordinary_index_variants_builds": 1,
+      "geometry_index_variants_builds": 3,
+      "tessellation_index_variants_builds": 3,
+      "completion_broadcasts_without_dependents": 0,
+      "shader_and_render_validation": false,
+      "source_revision": "working-tree",
+      "architecture": "arm64",
+      "repeat": 1,
+      "sanitizers": [],
+      "scope": "extracted production code with substitute resource/Metal/Win32 objects",
+      "gameplay_cost_measured": false,
+      "patch_base_revision": "e94c312f5c054263acf261cfa109edf13e757587"
+    }
+  ],
+  "hud_regression": {
+    "reference": "7c8dee1c2d73415301ceb7d1fa810861cef4cd67",
+    "architecture": "x86_64",
+    "experimental_libcxx_format": true,
+    "exception_support": false,
+    "fixture": "actual method and statistics headers; substitute HUD sink",
+    "debug_cases": 27,
+    "debug_output_matches": true,
+    "non_debug_hud_calls_removed": true,
+    "ns_per_call_median": {
+      "original": 1308.425,
+      "patched": 2.101025
+    },
+    "scope": "isolated formatting benchmark; not game FPS or full DXMT validation"
+  },
+  "existing_python_tests": {
+    "passed": 14
+  },
+  "shutdown_negative_test": {
+    "pre_fix_destructor": "timeout",
+    "forced_window": "after false wait predicate, before actual wait, while worker mutex held",
+    "timeout_seconds": 30,
+    "post_fix": "passed"
+  }
+}

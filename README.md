@@ -3,10 +3,12 @@
 This fork adds a measured performance investigation on Apple Silicon. See
 [the profiling workflow](docs/PERFORMANCE.md) and
 [the first local baseline](docs/BASELINE-2026-10-09.md).
-The [gameplay code audit](docs/GAMEPLAY-AUDIT-2026-10-10.md) ranks runtime candidates
-and includes reproducible source probes.
-It currently contains profiling tools, a tested configurator patch and an
-isolated DXMT HUD formatting candidate. It does
+The [gameplay code audit](docs/GAMEPLAY-AUDIT-2026-10-10.md) ranks runtime candidates.
+The [implemented DXMT fixes](docs/DXMT-FIXES-2026-10-10.md) include narrower binding
+invalidation, compiler wakeup/shutdown fixes and corrected pipeline cache keys,
+with source regression checks on Apple Silicon and x86-64. Runtime source is in
+[yongkangc/dxmt](https://github.com/yongkangc/dxmt/tree/gameplay-performance).
+This fork also contains profiling tools and a tested configurator patch. It does
 not yet provide a rebuilt Wine engine or a demonstrated game FPS improvement.
 A wrapper project that's the successor to Wineskin\
 This project supports *macOS 14.6* or later.
