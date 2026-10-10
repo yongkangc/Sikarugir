@@ -76,3 +76,24 @@ python3 /path/to/Sikarugir/tools/validate_dxmt_gameplay.py --source . --sanitize
 These source checks substitute Metal/resource/Win32 objects. They do not build or
 install an engine, validate actual rendered output, or demonstrate a game FPS gain.
 Existing LGPL source notices are preserved. No runtime or game files are included.
+
+## Second hot-path audit
+
+`dxmt-hotpath-state.patch` adds the state-setting, hazard, UAV, constant-buffer,
+index-dependent pipeline and deferred-map fixes described in
+[HOTPATH-AUDIT-2026-10-10.md](../docs/HOTPATH-AUDIT-2026-10-10.md). It is incremental
+from the first downstream DXMT commit `332cee27`.
+
+From either audited upstream revision, apply `dxmt-gameplay-performance.patch`
+first, then this patch. The HUD patch is separate and optional.
+
+```sh
+git apply --check /path/to/Sikarugir/patches/dxmt-hotpath-state.patch
+git apply /path/to/Sikarugir/patches/dxmt-hotpath-state.patch
+python3 /path/to/Sikarugir/tools/audit_dxmt_hotpath.py --source .
+python3 /path/to/Sikarugir/tools/validate_dxmt_gameplay.py --source .
+```
+
+The probe supports `--architecture x86_64` and `--sanitize`, plus
+`--reference 332cee27 --expect baseline` for the original audited behaviors.
+Full engine/game validation remains required; these checks do not render frames.

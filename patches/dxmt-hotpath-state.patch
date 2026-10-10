@@ -1,0 +1,363 @@
+diff --git a/src/d3d11/d3d11_context_def.cpp b/src/d3d11/d3d11_context_def.cpp
+index 554912d..822e9c3 100644
+--- a/src/d3d11/d3d11_context_def.cpp
++++ b/src/d3d11/d3d11_context_def.cpp
+@@ -147,30 +147,18 @@ public:
+   STDMETHODCALLTYPE
+   Map(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
+       D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
++    if (unlikely(!pResource || !pMappedResource))
++      return E_INVALIDARG;
+     UINT buffer_length = 0, &row_pitch = buffer_length;
+     UINT bind_flag = 0, &depth_pitch = bind_flag;
+     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
+-      if (!pMappedResource)
+-        return E_INVALIDARG;
+       switch (MapType) {
+       case D3D11_MAP_READ:
+       case D3D11_MAP_WRITE:
+       case D3D11_MAP_READ_WRITE:
+         return E_INVALIDARG;
+       case D3D11_MAP_WRITE_DISCARD: {
+-        if (bind_flag & D3D11_BIND_VERTEX_BUFFER) {
+-          state_.InputAssembler.VertexBuffers.set_dirty();
+-        }
+-        if (bind_flag & D3D11_BIND_CONSTANT_BUFFER) {
+-          for (auto &stage : state_.ShaderStages) {
+-            stage.ConstantBuffers.set_dirty();
+-          }
+-        }
+-        if (bind_flag & D3D11_BIND_SHADER_RESOURCE) {
+-          for (auto &stage : state_.ShaderStages) {
+-            stage.SRVs.set_dirty();
+-          }
+-        }
++        InvalidateDynamicResourceBindings(pResource, bind_flag);
+ 
+         pMappedResource->pData = MapDynamicBuffer(dynamic);
+         pMappedResource->RowPitch = buffer_length;
+@@ -193,17 +181,13 @@ public:
+       return S_OK;
+     }
+     if (auto dynamic = GetDynamicLinearTexture(pResource, &row_pitch, &depth_pitch)) {
+-      if (!pMappedResource)
+-        return E_INVALIDARG;
+       switch (MapType) {
+       case D3D11_MAP_READ:
+       case D3D11_MAP_WRITE:
+       case D3D11_MAP_READ_WRITE:
+         return E_INVALIDARG;
+       case D3D11_MAP_WRITE_DISCARD: {
+-        for (auto &stage : state_.ShaderStages) {
+-            stage.SRVs.set_dirty();
+-        }
++        InvalidateDynamicResourceBindings(pResource, D3D11_BIND_SHADER_RESOURCE);
+         Rc<TextureAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId());
+         uint32_t id = ctx_state.current_cmdlist->used_dynamic_lineartextures.size();
+         // track the current allocation in case of a following NO_OVERWRITE map
+@@ -242,8 +226,6 @@ public:
+       return S_OK;
+     }
+     if (auto dynamic = GetDynamicTexture(pResource, Subresource, &row_pitch, &depth_pitch)) {
+-      if (!pMappedResource)
+-        return E_INVALIDARG;
+       switch (MapType) {
+       case D3D11_MAP_READ:
+       case D3D11_MAP_WRITE:
+@@ -251,9 +233,7 @@ public:
+       case D3D11_MAP_WRITE_NO_OVERWRITE:
+         return E_INVALIDARG;
+       case D3D11_MAP_WRITE_DISCARD: {
+-        for (auto &stage : state_.ShaderStages) {
+-            stage.SRVs.set_dirty();
+-        }
++        InvalidateDynamicResourceBindings(pResource, D3D11_BIND_SHADER_RESOURCE);
+         pMappedResource->pData = MapDynamicBuffer(dynamic);
+         pMappedResource->RowPitch = row_pitch;
+         pMappedResource->DepthPitch = depth_pitch;
+diff --git a/src/d3d11/d3d11_context_imm.cpp b/src/d3d11/d3d11_context_imm.cpp
+index 236e0f8..684ebe9 100644
+--- a/src/d3d11/d3d11_context_imm.cpp
++++ b/src/d3d11/d3d11_context_imm.cpp
+@@ -133,31 +133,6 @@ public:
+     return dynamic->immediateMappedMemory();
+   }
+ 
+-  void
+-  InvalidateDynamicResourceBindings(ID3D11Resource *pResource, UINT bind_flags) {
+-    auto resource = GetResourceCommon(pResource);
+-    if (bind_flags & D3D11_BIND_VERTEX_BUFFER) {
+-      for (auto [slot, binding] : state_.InputAssembler.VertexBuffers) {
+-        if (binding.Buffer.ptr() == resource)
+-          state_.InputAssembler.VertexBuffers.set_dirty(slot);
+-      }
+-    }
+-    for (auto &stage : state_.ShaderStages) {
+-      if (bind_flags & D3D11_BIND_CONSTANT_BUFFER) {
+-        for (auto [slot, binding] : stage.ConstantBuffers) {
+-          if (binding.Buffer.ptr() == resource)
+-            stage.ConstantBuffers.set_dirty(slot);
+-        }
+-      }
+-      if (bind_flags & D3D11_BIND_SHADER_RESOURCE) {
+-        for (auto [slot, binding] : stage.SRVs) {
+-          if (binding.SRV->resource_.ptr() == resource)
+-            stage.SRVs.set_dirty(slot);
+-        }
+-      }
+-    }
+-  }
+-
+   HRESULT
+   STDMETHODCALLTYPE
+   Map(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
+diff --git a/src/d3d11/d3d11_context_impl.cpp b/src/d3d11/d3d11_context_impl.cpp
+index c3db7c2..5a1615e 100644
+--- a/src/d3d11/d3d11_context_impl.cpp
++++ b/src/d3d11/d3d11_context_impl.cpp
+@@ -1926,11 +1926,10 @@ public:
+   IASetInputLayout(ID3D11InputLayout *pInputLayout) override {
+     std::lock_guard<mutex_t> lock(mutex);
+ 
+-    if (auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout)) {
+-      state_.InputAssembler.InputLayout = std::move(expected);
+-    } else {
+-      state_.InputAssembler.InputLayout = nullptr;
+-    }
++    auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout);
++    if (state_.InputAssembler.InputLayout.ptr() == expected.ptr())
++      return;
++    state_.InputAssembler.InputLayout = std::move(expected);
+     InvalidateRenderPipeline();
+   }
+   void
+@@ -3286,6 +3285,31 @@ public:
+   std::pair<BufferAllocation *, uint32_t>
+   GetDynamicBufferAllocation(Rc<DynamicBuffer> &dynamic);
+ 
++  void
++  InvalidateDynamicResourceBindings(ID3D11Resource *pResource, UINT bind_flags) {
++    auto resource = GetResourceCommon(pResource);
++    if (bind_flags & D3D11_BIND_VERTEX_BUFFER) {
++      for (auto [slot, binding] : state_.InputAssembler.VertexBuffers) {
++        if (binding.Buffer.ptr() == resource)
++          state_.InputAssembler.VertexBuffers.set_dirty(slot);
++      }
++    }
++    for (auto &stage : state_.ShaderStages) {
++      if (bind_flags & D3D11_BIND_CONSTANT_BUFFER) {
++        for (auto [slot, binding] : stage.ConstantBuffers) {
++          if (binding.Buffer.ptr() == resource)
++            stage.ConstantBuffers.set_dirty(slot);
++        }
++      }
++      if (bind_flags & D3D11_BIND_SHADER_RESOURCE) {
++        for (auto [slot, binding] : stage.SRVs) {
++          if (binding.SRV->resource_.ptr() == resource)
++            stage.SRVs.set_dirty(slot);
++        }
++      }
++    }
++  }
++
+   uint64_t *allocated_encoder_argbuf_size_ = nullptr;
+ 
+   uint64_t PreAllocateArgumentBuffer(size_t size, size_t alignment) {
+@@ -3311,8 +3335,9 @@ public:
+     bool dirty_cbuffer = ShaderStage.ConstantBuffers.any_dirty_masked(reflection->ConstantBufferSlotMask);
+     bool dirty_sampler = ShaderStage.Samplers.any_dirty_masked(reflection->SamplerSlotMask);
+     bool dirty_srv = ShaderStage.SRVs.any_dirty_masked(reflection->SRVSlotMaskHi, reflection->SRVSlotMaskLo);
++    bool dirty_uav = UAVBindingSet.any_dirty_masked(reflection->UAVSlotMask);
+     bool uav_bound = UAVBindingSet.any_bound_masked(reflection->UAVSlotMask);
+-    if (!dirty_cbuffer && !dirty_sampler && !dirty_srv && !uav_bound)
++    if (!dirty_cbuffer && !dirty_sampler && !dirty_srv && !dirty_uav && !uav_bound)
+       return;
+ 
+     if (reflection->NumConstantBuffers && dirty_cbuffer) {
+@@ -3324,7 +3349,7 @@ public:
+       ShaderStage.ConstantBuffers.clear_dirty();
+     }
+ 
+-    if (reflection->NumArguments && (dirty_sampler || dirty_srv || uav_bound)) {
++    if (reflection->NumArguments && (dirty_sampler || dirty_srv || dirty_uav || uav_bound)) {
+       auto ArgumentTableQwords = reflection->ArgumentTableQwords;
+       auto offset = PreAllocateArgumentBuffer(ArgumentTableQwords << 3, 32);
+       EmitST([=, arg = managed_shader->arguments_info()](ArgumentEncodingContext &enc) {
+@@ -3332,7 +3357,7 @@ public:
+       });
+       ShaderStage.Samplers.clear_dirty();
+       ShaderStage.SRVs.clear_dirty();
+-      if (stage == PipelineStage::Pixel || stage == PipelineStage::Compute) {
++      if (stage == PipelineStage::Compute) {
+         UAVBindingSet.clear_dirty();
+       }
+     }
+@@ -3469,30 +3494,26 @@ public:
+       if (pConstantBuffer) {
+         bool replaced = false;
+         auto &entry = ShaderStage.ConstantBuffers.bind(slot, {pConstantBuffer}, replaced);
++        auto first_constant = pFirstConstant ? pFirstConstant[slot - StartSlot] : 0;
++        auto num_constants = pNumConstants ? pNumConstants[slot - StartSlot]
++                                          : UINT(GetResourceCommon(pConstantBuffer)->buffer()->length() >> 4);
+         if (!replaced) {
+-          if (pFirstConstant &&
+-              pFirstConstant[slot - StartSlot] != entry.FirstConstant) {
++          if (first_constant != entry.FirstConstant) {
+             ShaderStage.ConstantBuffers.set_dirty(slot);
+-            entry.FirstConstant = pFirstConstant[slot - StartSlot];
++            entry.FirstConstant = first_constant;
+             EmitST([=, offset = entry.FirstConstant
+                                 << 4](ArgumentEncodingContext &enc) mutable {
+               enc.bindConstantBufferOffset<Stage>(slot, offset);
+             });
+           }
+-          if (pNumConstants && pNumConstants[slot - StartSlot] != entry.NumConstants) {
++          if (num_constants != entry.NumConstants) {
+             ShaderStage.ConstantBuffers.set_dirty(slot);
+-            entry.NumConstants = pNumConstants[slot - StartSlot];
++            entry.NumConstants = num_constants;
+           }
+           continue;
+         }
+-        entry.FirstConstant = pFirstConstant ? pFirstConstant[slot - StartSlot] : 0;
+-        if (pNumConstants) {
+-          entry.NumConstants = pNumConstants[slot - StartSlot];
+-        } else {
+-          D3D11_BUFFER_DESC desc;
+-          pConstantBuffer->GetDesc(&desc);
+-          entry.NumConstants = desc.ByteWidth >> 4;
+-        }
++        entry.FirstConstant = first_constant;
++        entry.NumConstants = num_constants;
+         entry.Buffer = GetResourceCommon(pConstantBuffer);
+         EmitST([=, buffer = entry.Buffer->buffer(), offset = entry.FirstConstant << 4](ArgumentEncodingContext &enc
+              ) mutable { enc.bindConstantBuffer<Stage>(slot, offset, forward_rc(buffer)); });
+@@ -3530,6 +3551,10 @@ public:
+         if (ppConstantBuffers) {
+           ppConstantBuffers[i] = nullptr;
+         }
++        if (pFirstConstant)
++          pFirstConstant[i] = 0;
++        if (pNumConstants)
++          pNumConstants[i] = 0;
+       }
+     }
+   }
+@@ -3742,14 +3767,19 @@ public:
+         bool replaced = false;
+         auto &entry = VertexBuffers.bind(slot, {pVertexBuffer}, replaced, !pVertexBuffer->hazardsFree());
+         if (!replaced) {
++          bool changed = false;
+           if (pStrides && pStrides[slot - StartSlot] != entry.Stride) {
+             VertexBuffers.set_dirty(slot);
+             entry.Stride = pStrides[slot - StartSlot];
++            changed = true;
+           }
+           if (pOffsets && pOffsets[slot - StartSlot] != entry.Offset) {
+             VertexBuffers.set_dirty(slot);
+             entry.Offset = pOffsets[slot - StartSlot];
++            changed = true;
+           }
++          if (!changed)
++            continue;
+           EmitST([=, offset = entry.Offset,
+                 stride = entry.Stride](ArgumentEncodingContext &enc) mutable {
+             enc.bindVertexBufferOffset(slot, offset, stride);
+@@ -4622,6 +4652,29 @@ public:
+     return ptr ? ptr->GetManagedShader() : nullptr;
+   };
+ 
++  template <bool IndexedDraw>
++  SM50_INDEX_BUFFER_FORMAT
++  GetDrawIndexBufferFormat() {
++    if constexpr (IndexedDraw)
++      return state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT
++                 ? SM50_INDEX_BUFFER_FORMAT_UINT32
++                 : SM50_INDEX_BUFFER_FORMAT_UINT16;
++    return SM50_INDEX_BUFFER_FORMAT_NONE;
++  }
++
++  template <bool IndexedDraw>
++  void
++  UpdateRenderPipelineIndexFormat() {
++    auto format = GetDrawIndexBufferFormat<IndexedDraw>();
++    if (render_pipeline_index_format == format)
++      return;
++    render_pipeline_index_format = format;
++    // Mesh-emulated geometry/tessellation shaders specialize their index loads.
++    if (cmdbuf_state == CommandBufferState::GeometryRenderPipelineReady ||
++        cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady)
++      InvalidateRenderPipeline();
++  }
++
+   template <bool IndexedDraw>
+   void
+   InitializeGraphicsPipelineDesc(MTL_GRAPHICS_PIPELINE_DESC &Desc) {
+@@ -4673,19 +4726,14 @@ public:
+     } else {
+       Desc.GSStripTopology = false;
+     }
+-    if constexpr (IndexedDraw) {
+-      Desc.IndexBufferFormat = state_.InputAssembler.IndexBufferFormat == DXGI_FORMAT_R32_UINT
+-                                   ? SM50_INDEX_BUFFER_FORMAT_UINT32
+-                                   : SM50_INDEX_BUFFER_FORMAT_UINT16;
+-    } else {
+-      Desc.IndexBufferFormat = SM50_INDEX_BUFFER_FORMAT_NONE;
+-    }
++    Desc.IndexBufferFormat = GetDrawIndexBufferFormat<IndexedDraw>();
+     Desc.SampleCount = state_.OutputMerger.SampleCount;
+   }
+ 
+   template <bool IndexedDraw>
+   DrawCallStatus
+   FinalizeTessellationRenderPipeline() {
++    UpdateRenderPipelineIndexFormat<IndexedDraw>();
+     if (cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady)
+       return DrawCallStatus::Tessellation;
+     auto HS = GetManagedShader<PipelineStage::Hull>();
+@@ -4767,6 +4815,7 @@ public:
+   template <bool IndexedDraw>
+   DrawCallStatus
+   FinalizeGeometryRenderPipeline() {
++    UpdateRenderPipelineIndexFormat<IndexedDraw>();
+     if (cmdbuf_state == CommandBufferState::GeometryRenderPipelineReady)
+       return DrawCallStatus::Geometry;
+     if (!SwitchToRenderEncoder()) {
+@@ -4968,6 +5017,8 @@ public:
+       UploadShaderStageResourceBinding<PipelineStage::Vertex, PipelineKind::Ordinary>();
+       UploadShaderStageResourceBinding<PipelineStage::Pixel, PipelineKind::Ordinary>();
+     }
++    // All active graphics stages must observe OM UAV changes before clearing.
++    state_.OutputMerger.UAVs.clear_dirty();
+     return status;
+   }
+ 
+@@ -5134,6 +5185,7 @@ protected:
+   MTLD3D11Device *device;
+   CommandBufferState cmdbuf_state = CommandBufferState::Idle;
+   CommandBufferState previous_render_pipeline_state = CommandBufferState::Idle;
++  SM50_INDEX_BUFFER_FORMAT render_pipeline_index_format = SM50_INDEX_BUFFER_FORMAT_NONE;
+   ContextInternalState &ctx_state;
+   ContextInternalState::device_mutex_t &mutex;
+ 
+diff --git a/src/dxmt/dxmt_binding_set.hpp b/src/dxmt/dxmt_binding_set.hpp
+index ad9256d..1459574 100644
+--- a/src/dxmt/dxmt_binding_set.hpp
++++ b/src/dxmt/dxmt_binding_set.hpp
+@@ -136,8 +136,8 @@ public:
+       }
+     } else {
+       bound.set(slot, true);
+-      this->hazard.set(slot, hazard);
+     }
++    this->hazard.set(slot, hazard);
+     // new (storage.data() + slot) Element(std::forward<Element>(element));
+     // std::construct_at(storage.data() + slot, std::forward<Element>(element));
+     // idk why placement construction kills performance
+@@ -243,4 +243,4 @@ public:
+     return NumElements;
+   }
+ };
+-} // namespace dxmt
+\ No newline at end of file
++} // namespace dxmt

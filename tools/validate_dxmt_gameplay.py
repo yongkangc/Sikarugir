@@ -41,7 +41,8 @@ def main():
     with tempfile.TemporaryDirectory(prefix="dxmt-gameplay-validation-") as temporary:
         folder = Path(temporary)
         sources = {}
-        for name in FILES + ["src/d3d11/d3d11_pipeline_cache.cpp"]:
+        for name in FILES + ["src/d3d11/d3d11_pipeline_cache.cpp",
+                             "src/d3d11/d3d11_context_impl.cpp", "src/d3d11/d3d11_context_def.cpp"]:
             if args.reference:
                 source = subprocess.run(["git", "show", f"{args.reference}:{name}"], cwd=args.source,
                                         check=True, capture_output=True, text=True).stdout
@@ -73,12 +74,20 @@ value.wait(lock, [&] {
         (shim / "util_win32_compat.h").write_text("#pragma once\n")
 
         context = sources["src/d3d11/d3d11_context_imm.cpp"]
-        invalidation = function(context, "void\n  InvalidateDynamicResourceBindings(")
+        marker = "void\n  InvalidateDynamicResourceBindings("
+        shared = sources["src/d3d11/d3d11_context_impl.cpp"]
+        invalidation = function(shared if marker in shared else context, marker)
         # Verify the production Map routes all three renamed resource kinds here.
         mapping = function(context, "HRESULT\n  STDMETHODCALLTYPE\n  Map(")
         assert mapping.count("InvalidateDynamicResourceBindings(pResource, bind_flag);") == 1
         assert mapping.count("InvalidateDynamicResourceBindings(pResource, D3D11_BIND_SHADER_RESOURCE);") == 2
         assert ".set_dirty(" not in mapping
+        if marker in shared:
+            deferred = function(sources["src/d3d11/d3d11_context_def.cpp"],
+                                "HRESULT\n  STDMETHODCALLTYPE\n  Map(")
+            assert deferred.count("InvalidateDynamicResourceBindings(pResource, bind_flag);") == 1
+            assert deferred.count("InvalidateDynamicResourceBindings(pResource, D3D11_BIND_SHADER_RESOURCE);") == 2
+            assert ".set_dirty(" not in deferred
         (folder / "invalidation.inc").write_text(invalidation)
 
         header = sources["src/d3d11/d3d11_pipeline.hpp"]

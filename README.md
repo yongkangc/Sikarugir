@@ -4,6 +4,8 @@ This fork adds a measured performance investigation on Apple Silicon. See
 [the profiling workflow](docs/PERFORMANCE.md) and
 [the first local baseline](docs/BASELINE-2026-10-09.md).
 The [gameplay code audit](docs/GAMEPLAY-AUDIT-2026-10-10.md) ranks runtime candidates.
+The [second hot-path audit](docs/HOTPATH-AUDIT-2026-10-10.md) fixes redundant
+state-setting work and binding/pipeline transition bugs, with before/after probes.
 The [implemented DXMT fixes](docs/DXMT-FIXES-2026-10-10.md) include narrower binding
 invalidation, compiler wakeup/shutdown fixes and corrected pipeline cache keys,
 with source regression checks on Apple Silicon and x86-64. Runtime source is in
