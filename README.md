@@ -3,6 +3,8 @@
 This fork adds a measured performance investigation on Apple Silicon. See
 [the profiling workflow](docs/PERFORMANCE.md) and
 [the first local baseline](docs/BASELINE-2026-10-09.md).
+The [gameplay code audit](docs/GAMEPLAY-AUDIT-2026-10-10.md) ranks runtime candidates
+and includes reproducible source probes.
 It currently contains profiling tools, a tested configurator patch and an
 isolated DXMT HUD formatting candidate. It does
 not yet provide a rebuilt Wine engine or a demonstrated game FPS improvement.
